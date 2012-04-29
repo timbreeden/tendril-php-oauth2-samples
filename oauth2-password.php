@@ -4,8 +4,7 @@
  * © 2012 Tendril
  *
  * This sample demonstrates using OAUTH 2.0 to authenticate a user via
- * Tendril Connect and retrieve consumption information via the REST
- * APIs.
+ * Tendril Connect using password authentication.
  *
  * Please refer to the Tendril Connect API Primer on Authentication for
  * more information:
@@ -13,12 +12,6 @@
  *    http://dev.tendrilinc.com/docs/auth
  *
  */
-
-/*
- * Create a session.
- */
-session_name('tendril_meter_read');
-session_start();
 
 /*
  * Variables used for OAUTH with Tendril Connect:
@@ -31,15 +24,34 @@ session_start();
  *    refreshThreshold      - The minimum time for refreshing the access token
  */
 
-$connectURL           = 'http://dev.tendrilinc.com';
+$start_time = microtime(true);
+
+session_name('tendril_oauth_password');
+session_start();
+   
+$connectURL           = 'https://dev.tendrilinc.com';
 $client_id            = 'YOUR APP KEY';
 $client_secret        = 'YOUR APP SECRET';
 
 
-$callbackURL          = 'http://localhost/meter-read.php';
-$extendedPermissions  = 'account consumption';
+/*
+$connectURL           = 'http://localhost:3000';
+$client_id            = '9d4007d6d4d9646df71dfc54356f0271';
+$client_secret        = '163679753b141a5795e4f9750982d657';
+$externalAccountId    = 'shiflet';
+*/
+
+$callbackURL          = 'http://localhost/oauth2-password.php';
+$extendedPermissions  = 'account,billing,consumption'; //'account billing consumption';
 $refreshThreshold     = 5;
 
+
+/*
+ * Indicates the route the the specified Connect server
+ */
+#$x_route              = 'greenbutton';
+#$x_route              = 'sandbox';
+#$x_route              = 'essent';
 $x_route               = 'sandbox';
 
 /*
@@ -49,11 +61,24 @@ $x_route               = 'sandbox';
 $paramDefaults = array(
   'limitToLatest' => '20',
   'source' => 'ACTUAL',
-  'fromDate' => '2012-03-01T00:00:00-07:00',
-  'toDate' => '2012-04-15T00:00:00-07:00'
+  'fromDate' => '2012-01-01T00:00:00-07:00',
+  'toDate' => '2012-01-31T00:00:00-07:00',
+  'username' => 'kurt.cobain@tendril.com',
+  'password' => 'password'
 );
 
 $params = array_filter($_REQUEST) + $paramDefaults;
+
+/*
+ * Error messages that map to errors from OAuth, etc.
+ */
+ $errorMessages = array(
+  'invalid_grant'     => 'The provided authorization grant is invalid, expired, or revoked. ',
+  'invalid_client'    => 'The credentials that you entered do not match an existing account.',
+  'missing_username'  => 'The email address you entered is missing or incorrect.',
+  'missing_password'  => 'The password address you entered is missing or incorrect.',
+  'invalid_protocol'  => 'This resource must be accessed via HTTPS.'
+);
 
 /*
  * Source parameters used for select values in the UI.
@@ -70,14 +95,6 @@ $sourceParams = array(
 date_default_timezone_set('MST');
 
 /*
- * Compute the remaining time for the access_token.
- * This will be used to refresh the token when it expires.
- */
-$curr_time = date_timestamp_get(date_create());
-$exp_time = $_SESSION['expires_time'];
-$rem_time = $exp_time - $curr_time;
-
-/*
  * Convenience function for making HTTP GET requests.
  * Replace with http_get or use one of the RESTful PHP classes if desired.
  */
@@ -87,7 +104,7 @@ function curl_get($url, array $get = NULL, array $headers = NULL, array $options
     CURLOPT_HEADER => 0, 
     CURLOPT_HTTPHEADER => $headers,
     CURLOPT_RETURNTRANSFER => TRUE, 
-    CURLOPT_TIMEOUT => 4,
+    CURLOPT_TIMEOUT => 60,
     $headers
   ); 
   
@@ -97,7 +114,7 @@ function curl_get($url, array $get = NULL, array $headers = NULL, array $options
   if ( ! $result = curl_exec($ch)) { 
     trigger_error(curl_error($ch)); 
   } 
-  curl_close($ch); 
+  curl_close($ch);
   return $result; 
 }
 
@@ -105,7 +122,8 @@ function curl_get($url, array $get = NULL, array $headers = NULL, array $options
  * Convenience function for making HTTP POST requests.
  * Replace with http_post or use one of the RESTful PHP classes if desired.
  */
-function curl_post($url, array $post = NULL, array $headers = NULL, array $options = array()) {
+function curl_post($url, array $post = NULL, array $headers = NULL, array $options = array())
+{
     $defaults = array(
         CURLOPT_POST => 1,
         CURLOPT_HEADER => 0,
@@ -114,12 +132,10 @@ function curl_post($url, array $post = NULL, array $headers = NULL, array $optio
         CURLOPT_FRESH_CONNECT => 1,
         CURLOPT_RETURNTRANSFER => 1,
         CURLOPT_FORBID_REUSE => 1,
-        CURLOPT_TIMEOUT => 4,
+        CURLOPT_TIMEOUT => 60,
         CURLOPT_POSTFIELDS => http_build_query($post)
     );
 
-    $_defaults = defaults;
-    
     $ch = curl_init();
     curl_setopt_array($ch, ($options + $defaults));
     if( ! $result = curl_exec($ch)) {
@@ -133,50 +149,97 @@ function curl_post($url, array $post = NULL, array $headers = NULL, array $optio
  * Executed when the logout request parameter is set and the user is logged in.
  * Destroys the local session and calls logout on Tendril Connect.
  */
-if (isset($_GET['logout']) and $_SESSION['loggedin']) {
+if (isset($_POST['logout']) and $_SESSION['loggedin']) {
   
+  $url = $connectURL . '/oauth/logout';
+
+  $headers = array(
+    'Accept: application/json'
+  );
+  
+  $headers = array();
+  $data = array();
+  $options = array();
+  
+  $response = curl_post($url, $data, $headers, $options);
+
+  /*
+   * Destroy the session
+   */
   $_SESSION = array();
   session_destroy();
-   
-  // Logout of Tendril server to destroy session
-  $url = $connectURL . '/oauth/logout?redirect_uri=' . $callbackURL;
-  header("Location: $url", true, 303);
-  die();
 }
 
 /*
- * Obtain user authorization from Tendril Connect.
+ * Password authorization (0-legged?)
  *
- * Executed when the 'Connect with Tendril' link is clicked.
+ * OAuth 2.0 Spec - 4.3.  Resource Owner Password Credentials Grant
  *
- * Redirects the user the the OAUTH authorize URL - /oauth/authorize
+ * Similar to Twitter XAuth: https://dev.twitter.com/docs/oauth/xauth
  *
- * HTTP Request Parameters:
  *
- *    response_type   - REQUIRED.  Value MUST be set to "code".
- *    client_id       - REQUIRED.  The client identifier (aka App Key/ID)
- *    redirect_uri    - OPTIONAL.  If not included then use the one specified by the app.
- *    scope           - OPTIONAL.  The scope of the access request (app permissions).
- *    state           - RECOMMENDED.  An opaque value used by the client to maintain state between the request and callback.
- *
- * References:
- *
- *    OAUTH 2.0 Spec - 4.1.1. Authorization Request
- */  
-if (isset($_GET['signin'])) {
- 
-  $url = $connectURL;
-  $url .= '/oauth/authorize';
-  $url .= '?response_type=code';
-  $url .= '&client_id=' . $client_id;
-  $url .= '&redirect_uri=' . $callbackURL;
-  $url .= '&scope=' . $extendedPermissions;
-  $_SESSION['authorize_state'] = md5(uniqid(mt_rand(), true));
-  $url .= '&state=' . $_SESSION['authorize_state'];
-  $url .= '&x_dialog=true';
-  header("Location: $url", true, 303);
-  die();
+ */
+if (isset($_POST['login'])) {
+  $username = trim($_POST['username']);
+  $password = trim($_POST['password']);
+  
+  $url = $connectURL . '/oauth/access_token';
+
+  $headers = array(
+    'Accept: application/json'
+  );
+  
+  $headers = array();
+  
+  $data = array(
+    'grant_type'    => 'password',
+    'username'      => $username,
+    'password'      => $password,
+    'scope'         => $extendedPermissions,
+    'client_id'     => $client_id,
+    'client_secret' => $client_secret,
+    'route'         => $x_route
+  );
+
+  $options = array();
+  
+  $response = curl_post($url, $data, $headers, $options);
+
+  /*
+   * Decode the JSON response into a PHP array.
+   */
+    
+  $data = json_decode($response, true);
+  
+  if ($data['error']) {
+    $error = $data['error'];
+    $error_description = $data['error_description'];
+  } else {
+    
+    $_SESSION['access_token']     = $data['access_token'];
+    $_SESSION['token_type']       = $data['token_type'];
+    $_SESSION['expires_in']       = $data['expires_in'];
+    $_SESSION['refresh_token']    = $data['refresh_token'];
+    $_SESSION['route']            = $data['route'];
+    $_SESSION['scope']            = $data['scope'];
+    
+    // Set a session value to indicate the user is logged in
+    $_SESSION['loggedin']         = true;
+    
+    $date = date_create();
+    $timestamp                    = date_timestamp_get($date);
+    $expires_time                 = $timestamp + $data['expires_in'];
+    $_SESSION['expires_time']     = $expires_time;
+  }
 }
+
+/*
+ * Compute the remaining time for the access_token.
+ * This will be used to refresh the token when it expires.
+ */
+$curr_time = date_timestamp_get(date_create());
+$exp_time = $_SESSION['expires_time'];
+$rem_time = $exp_time - $curr_time;
 
 /*
  * Refresh the access token if it has expired. 
@@ -213,28 +276,24 @@ if (isset($_GET['signin'])) {
  */
 if ($rem_time <= $refreshThreshold and $_SESSION['access_token']) {
   
-  # Exchange the code that we have for an access token
+  # Exchange the refresh token that we have for an access token
   
   $url = $connectURL . '/oauth/access_token';
 
   $headers = array(
-  /*
-    'Accept: application/json',
-    'Content-Type: application/json'
-  */
+    'Accept: application/json'
   );
   
   $data = array(
     'grant_type'      => 'refresh_token',
     'refresh_token'   => $_SESSION['refresh_token'],
-    'scope'           => $extendedPermissions,
-    'route'           => $x_route
+    'scope'           => $extendedPermissions
   );
 
   $options = array();
   
-  $response = curl_get($url, $data, $headers, $options);
-  //$response = curl_post($url, $data, $headers, $options);
+  //$response = curl_get($url, $data, $headers, $options);
+  $response = curl_post($url, $data, $headers, $options);
 
   /*
    * Decode the JSON response into a PHP array.
@@ -245,7 +304,7 @@ if ($rem_time <= $refreshThreshold and $_SESSION['access_token']) {
   $_SESSION['expires_in']       = $data['expires_in'];
   $_SESSION['refresh_token']    = $data['refresh_token'];
   $_SESSION['scope']            = $data['scope'];
-  $_SESSION['route']            = $data['route'];
+  #$_SESSION['route']            = $data['route'];
   
   $date = date_create();
   $timestamp                    = date_timestamp_get($date);
@@ -255,127 +314,6 @@ if ($rem_time <= $refreshThreshold and $_SESSION['access_token']) {
   //$url = $callbackURL;
   //header("Location: $url", true, 303);
   //die();  
-}
-
-/*
- * Handle the authorization response code from Tendril Connect.
- *
- * HTTP redirect to the callback URL - $callbackURL
- * 
- * HTTP Callback Parameters:
- *
- *    code            - REQUIRED.  The authorization code generated by the authorization server.
- *    state           - REQUIRED if present in the client authorization request.  The exact value received from the client.
- *
- * The application should exchange this code for an access token.
- * 
- * HTTP GET request to OAUTH access_token URL - /oauth/access_token
- * 
- * HTTP Headers:
- *
- *    Accept          - The mime-type of the data that the client expects in the response.
- *    Content-Type    - The mime-type of the data in the client request.
- *
- * HTTP Request Parameters:
- *
- *    grant_type      - REQUIRED.  Value MUST be set to "authorization_code".
- *    code            - REQUIRED.  The authorization code received from the authorization server.
- *    redirect_uri    - REQUIRED, if the "redirect_uri" parameter was included in the authorization request.  Must match.
- *    client_id       - REQUIRED.  The client identifier (aka App Key/ID)
- *    client_secret   - REQUIRED.  The client password (aka App Secret)
- *
- * HTTP Response Parameters:
- *
- *    access_token    - REQUIRED.  The access token issued by the authorization server.
- *    token_type      - REQUIRED.  The type of the token issued, case insensitive.
- *    expires_in      - OPTIONAL.  The lifetime in seconds of the access token.
- *    refresh_token   - OPTIONAL.  The refresh token which can be used to obtain new access tokens.
- *    scope           - OPTIONAL.  The scope of the access token.
- *
- * References:
- *
- *    OAUTH 2.0 Spec - 4.1.2.  Authorization Response
- *    OAUTH 2.0 Spec - 4.1.3.  Access Token Request
- *    OAUTH 2.0 Spec - 2.3.1.  Client Password
- */
-if (isset($_GET['code'])) {
-
-  # Store the code in the session
-  $_SESSION['code'] = $_GET['code'];
-  $_SESSION['check_state'] = $_GET['state'];
-
-  // Verify the state by checking the received versus sent values.
-  
-  /*
-   * Exchange the code that was received for an access token.
-   */
-  
-  $url = $connectURL . '/oauth/access_token';
-
-  $headers = array(
-    /*
-  
-    'Accept: application/json',
-    'Content-Type: application/json'
-    'Access_Token:' . $_SESSION['access_token']
-    */
-  );
-  
-  $data = array(
-    'grant_type'    => 'authorization_code',
-    'code'          => $_GET['code'],
-    'redirect_uri'  => $callbackURL,
-    'client_id'     => $client_id,
-    'client_secret' => $client_secret,
-    'route'         => $x_route
-  );
-
-  $options = array();
-  
-  $response = curl_get($url, $data, $headers, $options);
-  //$response = curl_post($url, $data, $headers, $options);
-
-  /*
-   * Decode the JSON response into a PHP array.
-   */ 
-  $data = json_decode($response, true);
-  $_SESSION['access_token']     = $data['access_token'];
-  $_SESSION['token_type']       = $data['token_type'];
-  $_SESSION['expires_in']       = $data['expires_in'];
-  $_SESSION['refresh_token']    = $data['refresh_token'];
-  $_SESSION['scope']            = $data['scope'];
-  $_SESSION['route']            = $data['route'];
-  
-  // Set a session value to indicate the user is logged in
-  $_SESSION['loggedin']         = true;
-  
-  $date = date_create();
-  $timestamp                    = date_timestamp_get($date);
-  $expires_time                 = $timestamp + $data['expires_in'];
-  $_SESSION['expires_time']     = $expires_time;
-  
-  $url = $callbackURL;
-  header("Location: $url", true, 303);
-  die();  
-}
-
-/*
- * Handle OAUTH errors received from Tendril Connect.
- *
- * HTTP Response Parameters:
- *
- *    error               - REQUIRED.  A single error code.
- *    error_description   - OPTIONAL.  A human-readable UTF-8 encoded text providing additional information.
- *    error_uri           - OPTIONAL.  A URI identifying a human-readable web page with information about the error.
- *
- * References:
- *
- *    OAUTH 2.0 Spec - 4.1.2.1.  Error Response
- *    OAUTH 2.0 Spec - 5.2.  Error Response
- */
-if (isset($_GET['error'])) {
-  # error:   
-  # error_description: The user denied your request.
 }
 
 /*
@@ -446,7 +384,17 @@ if ($_SESSION['loggedin']) {
      }
 
    }
-   
+  /*
+   * Construct the URL using the parameters received from the form POST
+   */
+  /*
+  $url = $connectURL;
+  $url .= '/connect/user/current-user/account/default-account/consumption';
+  $url .= '/' . $params['resolution'];
+  $url .= ';from=' . $params['fromDate'];
+  $url .= ';to=' . $params['toDate'];
+  */
+
   $url = $connectURL;
   $url .= '/connect/meter/read';
   $url .= ';external-account-id=' . $_SESSION['externalAccountId'];
@@ -457,7 +405,6 @@ if ($_SESSION['loggedin']) {
   
   $headers = array(
     'Accept: application/json',
-    'Content-Type: application/json',
     'Access_Token:' . $_SESSION['access_token']
   );
   
@@ -469,6 +416,7 @@ if ($_SESSION['loggedin']) {
    * Decode the JSON response into a PHP array.
    */ 
   $responseData = json_decode($response, true);
+  
   $_SESSION['updated']     = date_timestamp_get(date_create());
 }
 
@@ -478,16 +426,28 @@ if ($_SESSION['loggedin']) {
 if (isset($_REQUEST['showInfo'])) {
   $_SESSION['showInfo'] = $_REQUEST['showInfo'];
 }
+
+$end_time = microtime(true);
+$total_time = round(($end_time - $start_time), 2);
 ?>
 <html>
   <head>
-    <title>Meter Read</title>
+    <title>OAuth Password Login and Meter Reading API</title>
+    <style>
+      #login {display:block; width: 300px;}
+      #login .row {clear: both; margin: 10px auto;}
+      #login label {}
+      #login input {float: right;}
+      #login input[type="image"] {float: none; display: block; margin: 0px auto;}
+    </style>
   </head>
   <body>
-    <h3>Tendril Connect Sample - OAUTH and Meter Readings API</h3>
+    <h3>Tendril Connect Sample - OAUTH Password Login and Meter Reading API</h3>
     <?php if($_SESSION['loggedin']) { ?>
     <div>
-      <a href="?logout">Log out</a>
+      <form id="logout" name="logout" action="oauth2-password.php" method="post">
+        <input type="submit" name="logout" value="Logout"/>
+      </form>
     </div>
     <?php } ?>
     <?php if(isset($_GET['error'])) { ?>
@@ -504,7 +464,8 @@ if (isset($_REQUEST['showInfo'])) {
         <li>token_type: <?= $_SESSION['token_type'] ?></li>
         <li>expires_in: <?= $_SESSION['expires_in'] ?></li>
         <li>refresh_token: <?= $_SESSION['refresh_token'] ?></li>
-        <li>x_route: <?=$_SESSION['route'] ?></li>
+        <li>x_route: <?= $x_route ?></li>
+        <li>total_time: <?= $total_time ?></li>
       </ul>
       <hr>
       <h4>Settings</h4>
@@ -560,11 +521,35 @@ if (isset($_REQUEST['showInfo'])) {
         <?= $responseData['MeterReading'][0]['Readings'][0]['value'] ?>
       </p>
     </div>
+    <?php } else { ?>
+      <form id="login" name="login" action="oauth2-password.php" method="post" accept-charset="UTF-8">
+        <fieldset>
+          <legend>Login</legend>
+          <div class="row">
+            <label><?= $errorMessages[$error] ?></label>
+          </div>
+          <input type="hidden" name="login" value="login"/>
+          <div class="row">
+            <label for="username" >Username:</label>
+            <input type="text" name="username" id="username" value="<?= $params['username'] ?>"/>
+          </div>
+          <div class="row">
+            <label for="password" >Password:</label>
+            <input type="password" name="password" id="password" value="<?= $params['password'] ?>"/>
+          </div>
+          <div class="row">
+            <input type="image" src="http://dev.tendrilinc.com/images/connect_green_175x22.png" onsubmit="submit-form();"/>
+          </div>
+        </fieldset>
+      </form>
+    <?php } ?>
     <hr>
     <h4 onclick="toggleInfo();" style="cursor: pointer">Info (Click to toggle)</h4>
     <div id="info" style="display: <?= $_SESSION['showInfo'] == 'true' ? 'block' : 'none' ?>;">
       <ul style="list-style: none; display: inline-block; margin: 0px; padding: 5px; border: 1px solid #000000">
         <li>url: <?= $url ?></li>
+        <li>response: <?= $response ?></li>
+        <li>data: <?= $data ?></li>
         <li>access_token: <?= $_SESSION['access_token'] ?></li>
         <li>token_type: <?= $_SESSION['token_type'] ?></li>
         <li>expires_in: <?= $_SESSION['expires_in'] ?></li>
@@ -578,15 +563,12 @@ if (isset($_REQUEST['showInfo'])) {
         <li>Refresh Seconds: <?php echo($rem_time); ?></li>
       </ul>
     </div>
-    <?php } else { ?>
-      <a class="btn connect" href="?signin" title="Connect with Tendril"><img src="http://dev.tendrilinc.com/images/connect_green_175x22.png"/></a>
-    <?php } ?>
     <script>
       function toggleInfo() {
         var d = document.getElementById('info');
         d.style.display = d.style.display == 'none' ? 'block' : 'none';
-        var show = document.forms['params'].elements['showInfo'].value;
-        document.forms['params'].elements['showInfo'].value = show === 'true' ? 'false' : 'true';
+        //var show = document.forms['params'].elements['showInfo'].value;
+        //document.forms['params'].elements['showInfo'].value = show === 'true' ? 'false' : 'true';
       }
     </script>
   </body>
